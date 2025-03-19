@@ -19,7 +19,7 @@ open-clip-torch
 openai==1.11.1
 openai-clip==1.0.1
 tokenizers
-torch==2.2.0
+torch
 torchvision
 transformers
 greenlet==3.0.3

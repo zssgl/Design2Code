@@ -1,17 +1,21 @@
 import os
 from tqdm import tqdm
 from Design2Code.data_utils.screenshot import take_screenshot
-from gpt4v_utils import cleanup_response, encode_image, gpt_cost, extract_text_from_html, index_text_from_html
+from Design2Code.prompting.gpt4v_utils import cleanup_response, encode_image, extract_text_from_html, index_text_from_html, gpt_cost
 import json
-from openai import OpenAI, AzureOpenAI
 import argparse
 import retry
-import shutil 
+import shutil
+from openai import OpenAI
+
+BASE_URL = "http://localhost:8000/v1"
+
+# Using the same cost function as in gpt4v_utils.py
 
 @retry.retry(tries=3, delay=2)
-def gpt4v_call(openai_client, base64_image, prompt):
+def qwen2_5vl_call(openai_client, base64_image, prompt, model="qwen2_5vl"):
 	response = openai_client.chat.completions.create(
-		model="gpt-4o-2024-05-13",
+		model=model,
 		messages=[
 			{
 				"role": "user",
@@ -35,16 +39,16 @@ def gpt4v_call(openai_client, base64_image, prompt):
 		seed=2024
 	)
 
-	prompt_tokens, completion_tokens, cost = gpt_cost("gpt-4o-2024-05-13", response.usage)
-	response = response.choices[0].message.content.strip()
-	response = cleanup_response(response)
-
-	return response, prompt_tokens, completion_tokens, cost
+	prompt_tokens, completion_tokens, cost = gpt_cost(model, response.usage)
+	response_text = response.choices[0].message.content.strip()
+	response_text = cleanup_response(response_text)
+	
+	return response_text, prompt_tokens, completion_tokens, cost
 
 @retry.retry(tries=3, delay=2)
-def gpt4v_revision_call(openai_client, base64_image_ref, base64_image_pred, prompt):
+def qwen2_5vl_revision_call(openai_client, base64_image_ref, base64_image_pred, prompt, model="qwen2_5vl"):
 	response = openai_client.chat.completions.create(
-		model="gpt-4o-2024-05-13",
+		model=model,
 		messages=[
 			{
 				"role": "user",
@@ -83,30 +87,36 @@ def gpt4v_revision_call(openai_client, base64_image_ref, base64_image_pred, prom
 		seed=2024
 	)
 	
-	prompt_tokens, completion_tokens, cost = gpt_cost("gpt-4-vision-preview", response.usage)
-	response = response.choices[0].message.content.strip()
-	response = cleanup_response(response)
+	prompt_tokens, completion_tokens, cost = gpt_cost(model, response.usage)
+	response_text = response.choices[0].message.content.strip()
+	response_text = cleanup_response(response_text)
+	
+	return response_text, prompt_tokens, completion_tokens, cost
 
-	return response, prompt_tokens, completion_tokens, cost
-
-def gpt4_call(openai_client, prompt, model="gpt-4-1106", temperature=0., max_tokens=4000, json_output=False):
-	prompt_messages = [{"role": "user", "content": prompt}]
+def qwen2_5vl_text_call(openai_client, prompt, model="qwen2_5vl", temperature=0., max_tokens=4000, json_output=False):
 	response_format = {"type": "json_object"} if json_output else {"type": "text"}
-	completion = openai_client.chat.completions.create(
-        model=model,
-        messages=prompt_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format=response_format,
+	
+	response = openai_client.chat.completions.create(
+		model=model,
+		messages=[
+			{
+				"role": "user",
+				"content": prompt
+			}
+		],
+		temperature=temperature,
+		max_tokens=max_tokens,
+		response_format=response_format,
 		seed=2024
-    )
-	cost = gpt_cost(model, completion.usage)
-	response = completion.choices[0].message.content.strip()
-	response = cleanup_response(response)
-    
-	return response, completion.usage.prompt_tokens, completion.usage.completion_tokens, cost
+	)
+	
+	prompt_tokens, completion_tokens, cost = gpt_cost(model, response.usage)
+	response_text = response.choices[0].message.content.strip()
+	response_text = cleanup_response(response_text)
+	
+	return response_text, prompt_tokens, completion_tokens, cost
 
-def direct_prompting(openai_client, image_file):
+def direct_prompting(openai_client, image_file, model="qwen2_5vl"):
 	'''
 	{original input image + prompt} -> {output html}
 	'''
@@ -126,12 +136,12 @@ def direct_prompting(openai_client, image_file):
 	## encode image 
 	base64_image = encode_image(image_file)
 
-	## call GPT-4V
-	html, prompt_tokens, completion_tokens, cost = gpt4v_call(openai_client, base64_image, direct_prompt)
+	## call Qwen2.5VL
+	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(api_key, base64_image, direct_prompt, model)
 
 	return html, prompt_tokens, completion_tokens, cost
 
-def text_augmented_prompting(openai_client, image_file):
+def text_augmented_prompting(openai_client, image_file, model="qwen2_5vl"):
 	'''
 	{original input image + extracted text + prompt} -> {output html}
 	'''
@@ -158,12 +168,12 @@ def text_augmented_prompting(openai_client, image_file):
 	## encode image 
 	base64_image = encode_image(image_file)
 
-	## call GPT-4V
-	html, prompt_tokens, completion_tokens, cost = gpt4v_call(openai_client, base64_image, text_augmented_prompt)
+	## call Qwen2.5VL
+	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(openai_client, base64_image, text_augmented_prompt, model)
 
 	return html, prompt_tokens, completion_tokens, cost
 
-def visual_revision_prompting(openai_client, input_image_file, original_output_image):
+def visual_revision_prompting(api_key, input_image_file, original_output_image, model="Qwen2.5-VL"):
 	'''
 	{input image + initial output image + initial output html + oracle extracted text} -> {revised output html}
 	'''
@@ -191,11 +201,11 @@ def visual_revision_prompting(openai_client, input_image_file, original_output_i
 	prompt += "Pay attention to things like size, text, position, and color of all the elements, as well as the overall layout.\n"
 	prompt += "Respond directly with the content of the new revised and improved HTML file without any extra explanations:\n"
 
-	html, prompt_tokens, completion_tokens, cost = gpt4v_revision_call(openai_client, input_image, original_output_image, prompt)
+	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_revision_call(api_key, input_image, original_output_image, prompt, model)
 
 	return html, prompt_tokens, completion_tokens, cost
 
-def layout_marker_prompting(openai_client, image_file, auto_insertion=False):
+def layout_marker_prompting(api_key, image_file, auto_insertion=False, model="qwen-vl-max"):
 	'''
 	{marker image + extracted text + prompt} -> {output html}
 	'''
@@ -231,8 +241,8 @@ def layout_marker_prompting(openai_client, image_file, auto_insertion=False):
 	text_augmented_prompt += "Pay attention to things like size, text, position, and color of all the elements, as well as the overall layout.\n"
 	text_augmented_prompt += "Respond with the content of the HTML+CSS file (directly start with the code, do not add any additional explanation):\n"
 
-	## call GPT-4V
-	html, prompt_tokens, completion_tokens, cost = gpt4v_call(openai_client, orig_input_image, text_augmented_prompt)
+	## call Qwen2.5VL
+	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(api_key, orig_input_image, text_augmented_prompt, model)
 
 	if auto_insertion:
 		## put texts back into marker positions 
@@ -259,8 +269,8 @@ def layout_marker_prompting(openai_client, image_file, auto_insertion=False):
 		text_augmented_prompt += "Pay attention to things like size, text, position, and color of all the elements, as well as the overall layout.\n"
 		text_augmented_prompt += "Respond with the content of the HTML+CSS file (directly start with the code, do not add any additional explanation):\n"
 
-		## call GPT-4V
-		html, prompt_tokens, completion_tokens, cost = gpt4v_call(openai_client, orig_input_image, text_augmented_prompt)
+		## call Qwen2.5VL
+		html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(api_key, orig_input_image, text_augmented_prompt, model)
 
 	# ## remove the marker files
 	# os.remove(image_file.replace(".png", "_marker.html"))
@@ -271,11 +281,12 @@ def layout_marker_prompting(openai_client, image_file, auto_insertion=False):
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--prompt_method', type=str, default='text_augmented_prompting', help='prompting method to be chosen from {direct_prompting, text_augmented_prompting, revision_prompting, layout_marker_prompting}')
-	parser.add_argument('--orig_output_dir', type=str, default='gpt4v_text_augmented_prompting', help='directory of the original output that will be further revised')
+	parser.add_argument('--orig_output_dir', type=str, default='qwen2_5vl_text_augmented_prompting', help='directory of the original output that will be further revised')
 	parser.add_argument('--file_name', type=str, default='all', help='any particular file to be tested')
 	parser.add_argument('--subset', type=str, default='testset_100', help='evaluate on the full testset or just a subset (choose from: {testset_100, testset_full})')
 	parser.add_argument('--take_screenshot', action="store_true", help='whether to render and take screenshot of the webpages')
 	parser.add_argument('--auto_insertion', type=bool, default=False, help='whether to automatically insert texts into marker positions')
+	parser.add_argument('--model', type=str, default='qwen-vl-max', help='model to use (qwen-vl-plus or qwen-vl-max)')
 	args = parser.parse_args()
 
 	## track usage
@@ -290,12 +301,17 @@ if __name__ == "__main__":
 		total_completion_tokens = 0 
 		total_cost = 0
 
-	## OpenAI API Key
-	with open("../api_key.json", "r") as f:
-		api_key = json.load(f)
+	## Dashscope API Key
+	# with open("../api_key.json", "r") as f:
+	#	 api_key = json.load(f)
 	
+	api_key = "NULL"
+	if not api_key:
+		raise ValueError("DashScope API key not found in api_key.json. Please add 'dashscope_key' to your api_key.json file.")
+
 	openai_client = OpenAI(
-		api_key=api_key["openai_key"]
+		api_key=api_key,
+		base_url=BASE_URL
 	)
 
 	## specify file directory 
@@ -309,20 +325,20 @@ if __name__ == "__main__":
 		test_data_dir = "../testset_full"
 		cache_dir = "../predictions_full/"
 	else:
-		print ("Invalid subset!")
+		print("Invalid subset!")
 		exit()
 
 	if args.prompt_method == "direct_prompting":
-		predictions_dir = cache_dir + "gpt4v_direct_prompting"
+		predictions_dir = cache_dir + "qwen2_5vl_direct_prompting"
 	elif args.prompt_method == "text_augmented_prompting":
-		predictions_dir = cache_dir + "gpt4v_text_augmented_prompting"
+		predictions_dir = cache_dir + "qwen2_5vl_text_augmented_prompting"
 	elif args.prompt_method == "layout_marker_prompting":
-		predictions_dir = cache_dir + "gpt4v_layout_marker_prompting" + ("_auto_insertion" if args.auto_insertion else "") 
+		predictions_dir = cache_dir + "qwen2_5vl_layout_marker_prompting" + ("_auto_insertion" if args.auto_insertion else "") 
 	elif args.prompt_method == "revision_prompting":
-		predictions_dir = cache_dir + "gpt4v_visual_revision_prompting"
+		predictions_dir = cache_dir + "qwen2_5vl_visual_revision_prompting"
 		orig_data_dir = cache_dir + args.orig_output_dir
 	else: 
-		print ("Invalid prompt method!")
+		print("Invalid prompt method!")
 		exit()
 	
 	## create cache directory if not exists
@@ -337,16 +353,16 @@ if __name__ == "__main__":
 
 	for filename in tqdm(test_files):
 		if filename.endswith(".png"):
-			print (filename)
+			print(filename)
 			try:
 				if args.prompt_method == "direct_prompting":
-					html, prompt_tokens, completion_tokens, cost = direct_prompting(openai_client, os.path.join(test_data_dir, filename))
+					html, prompt_tokens, completion_tokens, cost = direct_prompting(dashscope_api_key, os.path.join(test_data_dir, filename), args.model)
 				elif args.prompt_method == "text_augmented_prompting":
-					html, prompt_tokens, completion_tokens, cost = text_augmented_prompting(openai_client, os.path.join(test_data_dir, filename))
+					html, prompt_tokens, completion_tokens, cost = text_augmented_prompting(openai_client, os.path.join(test_data_dir, filename), args.model)
 				elif args.prompt_method == "revision_prompting":
-					html, prompt_tokens, completion_tokens, cost = visual_revision_prompting(openai_client, os.path.join(test_data_dir, filename), os.path.join(orig_data_dir, filename))
+					html, prompt_tokens, completion_tokens, cost = visual_revision_prompting(openai_client, os.path.join(test_data_dir, filename), os.path.join(orig_data_dir, filename), args.model)
 				elif args.prompt_method == "layout_marker_prompting":
-					html, prompt_tokens, completion_tokens, cost = layout_marker_prompting(openai_client, os.path.join(test_data_dir, filename), auto_insertion=args.auto_insertion)
+					html, prompt_tokens, completion_tokens, cost = layout_marker_prompting(openai_client, os.path.join(test_data_dir, filename), auto_insertion=args.auto_insertion, model=args.model)
 
 				total_prompt_tokens += prompt_tokens
 				total_completion_tokens += completion_tokens
@@ -369,4 +385,3 @@ if __name__ == "__main__":
 
 	with open("usage.json", 'w+') as f:
 		usage = json.dump(usage, f, indent=4)
-
