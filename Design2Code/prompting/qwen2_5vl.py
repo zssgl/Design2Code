@@ -137,7 +137,7 @@ def direct_prompting(openai_client, image_file, model="qwen2_5vl"):
 	base64_image = encode_image(image_file)
 
 	## call Qwen2.5VL
-	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(api_key, base64_image, direct_prompt, model)
+	html, prompt_tokens, completion_tokens, cost = qwen2_5vl_call(openai_client, base64_image, direct_prompt, model)
 
 	return html, prompt_tokens, completion_tokens, cost
 
@@ -356,7 +356,7 @@ if __name__ == "__main__":
 			print(filename)
 			try:
 				if args.prompt_method == "direct_prompting":
-					html, prompt_tokens, completion_tokens, cost = direct_prompting(dashscope_api_key, os.path.join(test_data_dir, filename), args.model)
+					html, prompt_tokens, completion_tokens, cost = direct_prompting(openai_client, os.path.join(test_data_dir, filename), args.model)
 				elif args.prompt_method == "text_augmented_prompting":
 					html, prompt_tokens, completion_tokens, cost = text_augmented_prompting(openai_client, os.path.join(test_data_dir, filename), args.model)
 				elif args.prompt_method == "revision_prompting":
